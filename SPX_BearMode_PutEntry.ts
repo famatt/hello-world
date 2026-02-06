@@ -1,22 +1,22 @@
 #
 # SPX Bear Mode Put Entry Strategy
-# ─────────────────────────────────────────────────────────────
+# ----------------------------------------------------------------------
 # 5-Step Bearish Entry Signal for SPX
 #
 # Step 1: Wait 15 mins after open (9:45 AM ET) for Opening Range to settle
-# Step 2: Check VWAP — SPX must be below 6,940 → "Bear Mode"
-# Step 3: Check ADX/DMI — -DI on top, ADX climbing past 25
-# Step 4: MACD crossover — MACD line crosses below signal line
-# Step 5: Signal → Buy ATM Puts
+# Step 2: Check VWAP -- SPX must be below 6,940 = "Bear Mode"
+# Step 3: Check ADX/DMI -- -DI on top, ADX climbing past 25
+# Step 4: MACD crossover -- MACD line crosses below signal line
+# Step 5: Signal -- Buy ATM Puts
 #
 # Usage: Apply to SPX on an intraday chart (1-min, 5-min, or 15-min)
-# ─────────────────────────────────────────────────────────────
+# ----------------------------------------------------------------------
 
 declare lower;
 
-# ═══════════════════════════════════════════════════════════
-# INPUTS — Tune these to your preference
-# ═══════════════════════════════════════════════════════════
+# ==============================================================
+# INPUTS -- Tune these to your preference
+# ==============================================================
 
 input vwapBearLevel        = 6940;       # Step 2: Bear threshold
 input adxLength            = 14;         # Step 3: ADX/DMI lookback
@@ -24,31 +24,28 @@ input adxTrendThreshold    = 25;         # Step 3: ADX strength threshold
 input macdFastLength       = 12;         # Step 4: MACD fast EMA
 input macdSlowLength       = 26;         # Step 4: MACD slow EMA
 input macdSignalLength     = 9;          # Step 4: MACD signal smoothing
-input openingRangeMinutes  = 15;         # Step 1: Minutes after 9:30 to wait
+input entryTime            = 0945;       # Step 1: Earliest entry time (HHMM)
 input showLabels           = yes;        # Show status labels on chart
 input enableAlerts         = yes;        # Fire alerts on entry signal
 
-# ═══════════════════════════════════════════════════════════
-# STEP 1 — Opening Range Timer (Wait 15 Mins After 9:30 AM)
-# ═══════════════════════════════════════════════════════════
+# ==============================================================
+# STEP 1 -- Opening Range Timer (Wait 15 Mins After 9:30 AM)
+# ==============================================================
 
-def marketOpenTime = 0930;
-def entryWindowStart = marketOpenTime + openingRangeMinutes;
-# SecondsFromTime returns 0 at the target time, negative before, positive after
-def pastOpeningRange = SecondsFromTime(entryWindowStart) >= 0;
+def pastOpeningRange = SecondsFromTime(entryTime) >= 0;
 
-# ═══════════════════════════════════════════════════════════
-# STEP 2 — VWAP Bear Mode Check (Price Below Threshold)
-# ═══════════════════════════════════════════════════════════
+# ==============================================================
+# STEP 2 -- VWAP Bear Mode Check (Price Below Threshold)
+# ==============================================================
 
 def vwapValue = vwap();
 def belowVwap = close < vwapValue;
 def belowBearLevel = close < vwapBearLevel;
 def bearMode = belowVwap and belowBearLevel;
 
-# ═══════════════════════════════════════════════════════════
-# STEP 3 — ADX / DMI Trend Confirmation
-# ═══════════════════════════════════════════════════════════
+# ==============================================================
+# STEP 3 -- ADX / DMI Trend Confirmation
+# ==============================================================
 
 def hiDiff = high - high[1];
 def loDiff = low[1] - low;
@@ -76,9 +73,9 @@ def adxRising = ADXvalue > ADXvalue[1];
 
 def dmiConfirmed = minusDIonTop and adxStrong and adxRising;
 
-# ═══════════════════════════════════════════════════════════
-# STEP 4 — MACD Bearish Crossover
-# ═══════════════════════════════════════════════════════════
+# ==============================================================
+# STEP 4 -- MACD Bearish Crossover
+# ==============================================================
 
 def macdLine   = ExpAverage(close, macdFastLength) - ExpAverage(close, macdSlowLength);
 def signalLine = ExpAverage(macdLine, macdSignalLength);
@@ -87,18 +84,18 @@ def macdHist   = macdLine - signalLine;
 # MACD line just crossed below signal line (bearish cross)
 def macdBearCross = macdLine crosses below signalLine;
 
-# ═══════════════════════════════════════════════════════════
-# STEP 5 — ENTRY SIGNAL: All Conditions Met → Buy ATM Puts
-# ═══════════════════════════════════════════════════════════
+# ==============================================================
+# STEP 5 -- ENTRY SIGNAL: All Conditions Met = Buy ATM Puts
+# ==============================================================
 
 def allConditionsMet = pastOpeningRange
                    and bearMode
                    and dmiConfirmed
                    and macdBearCross;
 
-# ═══════════════════════════════════════════════════════════
-# PLOTS — Visual Signals on Lower Panel
-# ═══════════════════════════════════════════════════════════
+# ==============================================================
+# PLOTS -- Visual Signals on Lower Panel
+# ==============================================================
 
 # Plot the MACD and Signal for visual reference
 plot MACD = macdLine;
@@ -119,15 +116,15 @@ plot ZeroLine = 0;
 ZeroLine.SetDefaultColor(Color.GRAY);
 ZeroLine.SetStyle(Curve.SHORT_DASH);
 
-# ── Entry Arrow ──
+# -- Entry Arrow --
 plot PutEntry = if allConditionsMet then macdLine else Double.NaN;
 PutEntry.SetPaintingStrategy(PaintingStrategy.ARROW_DOWN);
 PutEntry.SetDefaultColor(Color.MAGENTA);
 PutEntry.SetLineWeight(4);
 
-# ═══════════════════════════════════════════════════════════
-# STEP TRACKER — Individual Condition Plots (1 = met, 0 = not)
-# ═══════════════════════════════════════════════════════════
+# ==============================================================
+# STEP TRACKER -- Individual Condition Plots (1 = met, 0 = not)
+# ==============================================================
 
 plot Step1_OpeningRange = if pastOpeningRange then 1 else 0;
 Step1_OpeningRange.SetDefaultColor(Color.GRAY);
@@ -149,9 +146,9 @@ Step4_MACD.SetDefaultColor(Color.ORANGE);
 Step4_MACD.SetPaintingStrategy(PaintingStrategy.POINTS);
 Step4_MACD.Hide();
 
-# ═══════════════════════════════════════════════════════════
-# CHART LABELS — Real-Time Status Dashboard
-# ═══════════════════════════════════════════════════════════
+# ==============================================================
+# CHART LABELS -- Real-Time Status Dashboard
+# ==============================================================
 
 AddLabel(showLabels,
     if pastOpeningRange then "Step 1: OPEN RANGE SETTLED" else "Step 1: WAITING FOR 9:45",
@@ -182,17 +179,17 @@ AddLabel(showLabels,
     if allConditionsMet then Color.MAGENTA else Color.DARK_GRAY
 );
 
-# ═══════════════════════════════════════════════════════════
+# ==============================================================
 # ALERTS
-# ═══════════════════════════════════════════════════════════
+# ==============================================================
 
 Alert(enableAlerts and allConditionsMet,
-    "SPX Bear Mode: ALL 5 STEPS MET — BUY ATM PUTS",
+    "SPX Bear Mode: ALL 5 STEPS MET - BUY ATM PUTS",
     Alert.BAR, Sound.Ding
 );
 
 Alert(enableAlerts and bearMode and !bearMode[1],
-    "SPX entered Bear Mode (below VWAP & " + vwapBearLevel + ")",
+    "SPX entered Bear Mode (below VWAP and " + vwapBearLevel + ")",
     Alert.BAR, Sound.NoSound
 );
 
