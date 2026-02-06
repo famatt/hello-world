@@ -108,16 +108,17 @@ def putSignal  = tradingWindow and belowVwap and bearDMI and macdBearCross;
 #  trailHigh:  highest price since call entry (for call trailing stop)
 #  trailLow:   lowest price since put entry  (for put trailing stop)
 
-# Pre-compute trail values OUTSIDE the if/else block
-# (thinkScript does not allow def inside if/else)
-def newHigh = Max(trailHigh[1], high);
-def newLow  = Min(trailLow[1], low);
-
 def position;
 def entryPrice;
 def trailHigh;
 def trailLow;
 def exitSignal;
+
+# Pre-compute trail values OUTSIDE the if/else block
+# (thinkScript does not allow def inside if/else)
+# These must come AFTER the variable declarations above
+def newHigh = Max(trailHigh[1], high);
+def newLow  = Min(trailLow[1], low);
 
 if (position[1] == 0) {
     # -- FLAT: look for new entries --
@@ -223,12 +224,12 @@ PutEntry.SetLineWeight(4);
 
 # -- Exit Markers --
 plot ExitCall = if exitSignal == 1 then macdLine else Double.NaN;
-ExitCall.SetPaintingStrategy(PaintingStrategy.SQUARE);
+ExitCall.SetPaintingStrategy(PaintingStrategy.BOOLEAN_ARROW_DOWN);
 ExitCall.SetDefaultColor(Color.YELLOW);
 ExitCall.SetLineWeight(3);
 
 plot ExitPut = if exitSignal == -1 then macdLine else Double.NaN;
-ExitPut.SetPaintingStrategy(PaintingStrategy.SQUARE);
+ExitPut.SetPaintingStrategy(PaintingStrategy.BOOLEAN_ARROW_DOWN);
 ExitPut.SetDefaultColor(Color.YELLOW);
 ExitPut.SetLineWeight(3);
 
