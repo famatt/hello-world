@@ -7,7 +7,7 @@
 # Condition         | Bull Setup (Calls 30DTE) | Bear Setup (Puts 0DTE)
 # ------------------+--------------------------+-----------------------
 # Step 1: Time      | After 9:45 AM ET         | After 9:45 AM ET
-# Step 2: VWAP      | Price ABOVE VWAP & level | Price BELOW VWAP & level
+# Step 2: VWAP      | Price ABOVE VWAP         | Price BELOW VWAP
 # Step 3: ADX/DMI   | +DI on top, ADX > 25     | -DI on top, ADX > 25
 # Step 4: MACD      | MACD crosses ABOVE signal| MACD crosses BELOW signal
 # Step 5: Action    | BUY 30DTE ATM CALLS      | BUY 0DTE ATM PUTS
@@ -29,8 +29,6 @@ declare lower;
 # INPUTS
 # ==============================================================
 
-input vwapBullLevel        = 6940;       # Price must be ABOVE this for bull
-input vwapBearLevel        = 6940;       # Price must be BELOW this for bear
 input adxLength            = 14;         # ADX / DMI lookback period
 input adxTrendThreshold    = 25;         # ADX minimum for trend confirmation
 input macdFastLength       = 12;         # MACD fast EMA length
@@ -54,8 +52,8 @@ def tradingWindow     = pastOpeningRange and beforeClose;
 # ==============================================================
 
 def vwapValue    = vwap();
-def aboveVwap    = close > vwapValue and close > vwapBullLevel;
-def belowVwap    = close < vwapValue and close < vwapBearLevel;
+def aboveVwap    = close > vwapValue;
+def belowVwap    = close < vwapValue;
 
 # ==============================================================
 # STEP 3 -- ADX / DMI
