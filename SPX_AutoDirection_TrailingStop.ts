@@ -1,5 +1,5 @@
 #
-# SPX 5-Filter 0DTE Options Strategy + 2-Point Trailing Stop
+# SPX 5-Filter 0DTE Strategy (Backtest + Live Signals)
 # ----------------------------------------------------------------------
 #
 # FILTER LOGIC
@@ -12,17 +12,15 @@
 # 4 MACD | Bullish crossover         | Bearish crossover
 # 5 RSI  | RSI must be < 70          | RSI must be > 30
 # -------+---------------------------+---------------------------
-# Exit   | Trailing Stop 2 pts       | Trailing Stop 2 pts
-# ----------------------------------------------------------------------
 #
 # USAGE
-#   1. In thinkorswim: Studies > Edit Studies > Create
-#   2. Paste this script and click OK
+#   1. In thinkorswim: Studies > Edit Studies > Strategies tab
+#   2. Create new strategy, paste this script, click OK
 #   3. Apply to SPX intraday chart (1-min or 2-min recommended)
 #
 # ----------------------------------------------------------------------
 
-declare lower;
+declare upper;
 
 # ==============================================================
 # INPUTS
@@ -36,9 +34,7 @@ input macdSignalLength     = 9;
 input rsiLength            = 14;
 input rsiOverbought        = 70;
 input rsiOversold          = 30;
-input trailingStopPoints   = 2.0;
 input showLabels           = yes;
-input enableAlerts         = yes;
 
 # ==============================================================
 # FILTER 1 -- VWAP (The Institutional Line)
@@ -65,9 +61,7 @@ def DX = if (plusDI + minusDI > 0)
          else 0;
 def ADXvalue = WildersAverage(DX, adxLength);
 
-def adxStrong = ADXvalue > adxTrendThreshold;
-def adxRising = ADXvalue > ADXvalue[3];
-def adxReady  = adxStrong and adxRising;
+def adxReady = ADXvalue > adxTrendThreshold and ADXvalue > ADXvalue[3];
 
 # ==============================================================
 # FILTER 3 -- DMI (The Scissor Check)
@@ -87,15 +81,13 @@ def macdHist   = macdLine - signalLine;
 
 def macdBullCrossNow = macdLine crosses above signalLine;
 def macdBearCrossNow = macdLine crosses below signalLine;
-def macdBullCross = macdBullCrossNow or macdBullCrossNow[1] or macdBullCrossNow[2]
-                    or macdBullCrossNow[3] or macdBullCrossNow[4];
-def macdBearCross = macdBearCrossNow or macdBearCrossNow[1] or macdBearCrossNow[2]
-                    or macdBearCrossNow[3] or macdBearCrossNow[4];
+def macdBullCross = Sum(macdBullCrossNow, 5) >= 1;
+def macdBearCross = Sum(macdBearCrossNow, 5) >= 1;
 
 # ==============================================================
 # FILTER 5 -- RSI (The Exhaustion Check)
 # ==============================================================
-# Computed manually to avoid built-in RSI() reference issues
+# Computed manually for reliable numeric output
 
 def rsiUp   = Max(close - close[1], 0);
 def rsiDown = Max(close[1] - close, 0);
@@ -136,80 +128,34 @@ def putFilters = (if belowVwap then 1 else 0)
               + (if rsiPutOK then 1 else 0);
 
 # ==============================================================
-# POSITION & TRAILING STOP
+# STRATEGY ORDERS (for backtesting)
 # ==============================================================
+# BUY_AUTO = go long (simulates buying calls)
+# SELL_AUTO = go short (simulates buying puts)
+# Opposing signal auto-closes the previous position
 
-def beforeClose = SecondsTillTime(1555) > 0;
+AddOrder(OrderType.BUY_AUTO, callSignal, close, 1,
+         Color.GREEN, Color.GREEN, "CALL ENTRY");
 
-def trailHigh =
-    if trailHigh[1] > 0 then
-        if low <= Max(trailHigh[1], high) - trailingStopPoints then 0
-        else if beforeClose == 0 then 0
-        else Max(trailHigh[1], high)
-    else if callSignal then close
-    else 0;
-
-def trailLow =
-    if trailLow[1] > 0 then
-        if high >= Min(trailLow[1], low) + trailingStopPoints then 0
-        else if beforeClose == 0 then 0
-        else Min(trailLow[1], low)
-    else if putSignal and trailHigh == 0 then close
-    else 0;
-
-def position = if trailHigh > 0 then 1 else if trailLow > 0 then -1 else 0;
-
-def exitSignal =
-    if trailHigh[1] > 0 and trailHigh == 0 then 1
-    else if trailLow[1] > 0 and trailLow == 0 then -1
-    else 0;
+AddOrder(OrderType.SELL_AUTO, putSignal, close, 1,
+         Color.RED, Color.RED, "PUT ENTRY");
 
 # ==============================================================
-# PLOTS -- MACD Panel
+# VISUAL ENTRY ARROWS
 # ==============================================================
 
-plot MACDplot = macdLine;
-MACDplot.SetDefaultColor(Color.CYAN);
-MACDplot.SetLineWeight(2);
+plot CallEntryArrow = if callSignal then low - (TickSize() * 20) else Double.NaN;
+CallEntryArrow.SetPaintingStrategy(PaintingStrategy.ARROW_UP);
+CallEntryArrow.SetDefaultColor(Color.CYAN);
+CallEntryArrow.SetLineWeight(5);
 
-plot SignalPlot = signalLine;
-SignalPlot.SetDefaultColor(Color.ORANGE);
-SignalPlot.SetLineWeight(1);
-
-plot Hist = macdHist;
-Hist.SetPaintingStrategy(PaintingStrategy.HISTOGRAM);
-Hist.AssignValueColor(if macdHist >= 0 then Color.DARK_GREEN else Color.DARK_RED);
-
-plot ZeroLine = 0;
-ZeroLine.SetDefaultColor(Color.GRAY);
-ZeroLine.SetStyle(Curve.SHORT_DASH);
-
-# -- Entry Arrows --
-plot CallEntry = if callSignal and trailHigh[1] == 0 and trailLow[1] == 0
-                 then macdLine else Double.NaN;
-CallEntry.SetPaintingStrategy(PaintingStrategy.ARROW_UP);
-CallEntry.SetDefaultColor(Color.GREEN);
-CallEntry.SetLineWeight(4);
-
-plot PutEntry = if putSignal and trailHigh[1] == 0 and trailLow[1] == 0
-                then macdLine else Double.NaN;
-PutEntry.SetPaintingStrategy(PaintingStrategy.ARROW_DOWN);
-PutEntry.SetDefaultColor(Color.MAGENTA);
-PutEntry.SetLineWeight(4);
-
-# -- Exit Markers --
-plot ExitCall = if exitSignal == 1 then macdLine else Double.NaN;
-ExitCall.SetPaintingStrategy(PaintingStrategy.POINTS);
-ExitCall.SetDefaultColor(Color.YELLOW);
-ExitCall.SetLineWeight(4);
-
-plot ExitPut = if exitSignal == -1 then macdLine else Double.NaN;
-ExitPut.SetPaintingStrategy(PaintingStrategy.POINTS);
-ExitPut.SetDefaultColor(Color.YELLOW);
-ExitPut.SetLineWeight(4);
+plot PutEntryArrow = if putSignal then high + (TickSize() * 20) else Double.NaN;
+PutEntryArrow.SetPaintingStrategy(PaintingStrategy.ARROW_DOWN);
+PutEntryArrow.SetDefaultColor(Color.MAGENTA);
+PutEntryArrow.SetLineWeight(5);
 
 # ==============================================================
-# CHART LABELS
+# DASHBOARD LABELS
 # ==============================================================
 
 AddLabel(showLabels,
@@ -219,7 +165,7 @@ AddLabel(showLabels,
 
 AddLabel(showLabels,
     "F2 ADX:" + Round(ADXvalue, 1) +
-    if adxReady then " TRENDING" else if adxStrong then " FLAT" else " CHOP",
+    if adxReady then " TRENDING" else " CHOP",
     if adxReady then Color.GREEN else Color.GRAY);
 
 AddLabel(showLabels,
@@ -238,7 +184,7 @@ AddLabel(showLabels,
     else if rsiValue <= rsiOversold then Color.RED
     else Color.GREEN);
 
-# -- Filter count: shows how many of 5 filters are passing --
+# -- Filter count --
 AddLabel(showLabels,
     if aboveVwap then "CALL " + callFilters + "/5"
     else if belowVwap then "PUT " + putFilters + "/5"
@@ -248,59 +194,9 @@ AddLabel(showLabels,
     else Color.GRAY);
 
 AddLabel(showLabels,
-    if position == 1 then "LONG CALLS | Stop:" + Round(trailHigh - trailingStopPoints, 2)
-    else if position == -1 then "LONG PUTS | Stop:" + Round(trailLow + trailingStopPoints, 2)
-    else "FLAT",
-    if position == 1 then Color.GREEN
-    else if position == -1 then Color.MAGENTA
-    else Color.DARK_GRAY);
-
-AddLabel(showLabels,
-    if callSignal and trailHigh[1] == 0 and trailLow[1] == 0 then ">>> BUY CALLS <<<"
-    else if putSignal and trailHigh[1] == 0 and trailLow[1] == 0 then ">>> BUY PUTS <<<"
-    else if exitSignal == 1 then ">>> SOLD CALLS <<<"
-    else if exitSignal == -1 then ">>> SOLD PUTS <<<"
-    else "",
+    if callSignal then "SIGNAL: BUY CALLS"
+    else if putSignal then "SIGNAL: BUY PUTS"
+    else "SIGNAL: NONE",
     if callSignal then Color.GREEN
     else if putSignal then Color.MAGENTA
-    else Color.YELLOW);
-
-# ==============================================================
-# ALERTS
-# ==============================================================
-
-Alert(enableAlerts and callSignal and trailHigh[1] == 0 and trailLow[1] == 0,
-    "ALL 5 FILTERS PASS: BUY CALLS", Alert.BAR, Sound.Ding);
-
-Alert(enableAlerts and putSignal and trailHigh[1] == 0 and trailLow[1] == 0,
-    "ALL 5 FILTERS PASS: BUY PUTS", Alert.BAR, Sound.Ding);
-
-Alert(enableAlerts and exitSignal == 1,
-    "TRAIL STOP: SELL CALLS", Alert.BAR, Sound.Ring);
-
-Alert(enableAlerts and exitSignal == -1,
-    "TRAIL STOP: SELL PUTS", Alert.BAR, Sound.Ring);
-
-# ==============================================================
-# HOW TO SET UP LIVE TRAILING STOP ORDERS
-# ==============================================================
-#
-# thinkScript cannot place live orders. Use alerts to trigger
-# manual entries, then attach a Trailing Stop:
-#
-# 1. ENTRY:
-#    - When alert fires, open the Option Chain
-#    - CALLS: select ATM strike
-#    - PUTS:  select ATM strike expiring TODAY (0DTE)
-#
-# 2. TRAILING STOP:
-#    - Right-click your order > Create Opposite Order
-#    - Change order type to Trailing Stop
-#    - Set Trail Amount = 2.00
-#    - Under Advanced Order > 1st Triggers 2nd
-#
-# 3. BRACKET ORDER (alternative):
-#    - Right-click bid/ask > Buy Custom > With Trailing Stop
-#    - Set trail = 2.00 pts > Submit
-#
-# ==============================================================
+    else Color.GRAY);
