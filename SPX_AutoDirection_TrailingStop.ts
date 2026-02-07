@@ -29,56 +29,52 @@ declare lower;
 # INPUTS
 # ==============================================================
 
-input adxLength            = 14;         # ADX / DMI lookback period
-input adxTrendThreshold    = 25;         # ADX minimum for trend confirmation
-input macdFastLength       = 12;         # MACD fast EMA length
-input macdSlowLength       = 26;         # MACD slow EMA length
-input macdSignalLength     = 9;          # MACD signal smoothing
-input entryTime            = 0945;       # Earliest entry time (HHMM after opening range)
-input trailingStopPoints   = 2.0;        # Trailing stop distance in points
+input adxLength            = 14;
+input adxTrendThreshold    = 25;
+input macdFastLength       = 12;
+input macdSlowLength       = 26;
+input macdSignalLength     = 9;
+input entryTime            = 0945;
+input trailingStopPoints   = 2.0;
 input showLabels           = yes;
 input enableAlerts         = yes;
 
 # ==============================================================
-# STEP 1 -- TIME FILTER: Past Opening Range
+# STEP 1 -- TIME FILTER
 # ==============================================================
 
-def pastOpeningRange  = SecondsFromTime(entryTime) >= 0;
-def beforeClose       = SecondsTillTime(1555) > 0;
-def tradingWindow     = pastOpeningRange and beforeClose;
+def pastOpeningRange = SecondsFromTime(entryTime) >= 0;
+def beforeClose     = SecondsTillTime(1555) > 0;
+def tradingWindow   = pastOpeningRange and beforeClose;
 
 # ==============================================================
 # STEP 2 -- VWAP DIRECTION
 # ==============================================================
 
-def vwapValue    = vwap();
-def aboveVwap    = close > vwapValue;
-def belowVwap    = close < vwapValue;
+def vwapValue = vwap();
+def aboveVwap = close > vwapValue;
+def belowVwap = close < vwapValue;
 
 # ==============================================================
 # STEP 3 -- ADX / DMI
 # ==============================================================
 
-def hiDiff   = high - high[1];
-def loDiff   = low[1] - low;
-def plusDM   = if hiDiff > loDiff and hiDiff > 0 then hiDiff else 0;
-def minusDM  = if loDiff > hiDiff and loDiff > 0 then loDiff else 0;
-def ATR      = WildersAverage(TrueRange(high, close, low), adxLength);
-def plusDI    = 100 * WildersAverage(plusDM, adxLength) / ATR;
+def hiDiff  = high - high[1];
+def loDiff  = low[1] - low;
+def plusDM  = if hiDiff > loDiff and hiDiff > 0 then hiDiff else 0;
+def minusDM = if loDiff > hiDiff and loDiff > 0 then loDiff else 0;
+def ATR     = WildersAverage(TrueRange(high, close, low), adxLength);
+def plusDI   = 100 * WildersAverage(plusDM, adxLength) / ATR;
 def minusDI  = 100 * WildersAverage(minusDM, adxLength) / ATR;
-def DX       = if (plusDI + minusDI > 0)
-               then 100 * AbsValue(plusDI - minusDI) / (plusDI + minusDI)
-               else 0;
+def DX = if (plusDI + minusDI > 0)
+         then 100 * AbsValue(plusDI - minusDI) / (plusDI + minusDI)
+         else 0;
 def ADXvalue = WildersAverage(DX, adxLength);
 
-def adxStrong   = ADXvalue > adxTrendThreshold;
-def adxRising   = ADXvalue > ADXvalue[1];
-
-# Bull DMI: +DI on top, strong and rising ADX
-def bullDMI = plusDI > minusDI and adxStrong and adxRising;
-
-# Bear DMI: -DI on top, strong and rising ADX
-def bearDMI = minusDI > plusDI and adxStrong and adxRising;
+def adxStrong  = ADXvalue > adxTrendThreshold;
+def adxRising  = ADXvalue > ADXvalue[1];
+def bullDMI    = plusDI > minusDI and adxStrong and adxRising;
+def bearDMI    = minusDI > plusDI and adxStrong and adxRising;
 
 # ==============================================================
 # STEP 4 -- MACD CROSS
@@ -99,111 +95,73 @@ def callSignal = tradingWindow and aboveVwap and bullDMI and macdBullCross;
 def putSignal  = tradingWindow and belowVwap and bearDMI and macdBearCross;
 
 # ==============================================================
-# POSITION & TRAILING STOP STATE MACHINE
+# POSITION & TRAILING STOP
 # ==============================================================
-#  position:  0 = flat, 1 = long calls, -1 = long puts
-#  entryPrice: price at time of entry
-#  trailHigh:  highest price since call entry (for call trailing stop)
-#  trailLow:   lowest price since put entry  (for put trailing stop)
+# Each variable uses its own inline if/then/else with self-reference.
+# This is the reliable recursive pattern for thinkScript.
+#
+# position:  0 = flat, 1 = long calls, -1 = long puts
 
-def position;
-def entryPrice;
-def trailHigh;
-def trailLow;
-def exitSignal;
+def position =
+    if position[1] == 0 then
+        if callSignal then 1
+        else if putSignal then -1
+        else 0
+    else if position[1] == 1 then
+        if low <= Max(trailHigh[1], high) - trailingStopPoints then 0
+        else if beforeClose == 0 then 0
+        else 1
+    else
+        if high >= Min(trailLow[1], low) + trailingStopPoints then 0
+        else if beforeClose == 0 then 0
+        else -1;
 
-# Pre-compute trail values OUTSIDE the if/else block
-# (thinkScript does not allow def inside if/else)
-# These must come AFTER the variable declarations above
-def newHigh = Max(trailHigh[1], high);
-def newLow  = Min(trailLow[1], low);
+def trailHigh =
+    if position[1] == 0 then
+        if callSignal then close
+        else 0
+    else if position[1] == 1 then
+        if low <= Max(trailHigh[1], high) - trailingStopPoints then 0
+        else if beforeClose == 0 then 0
+        else Max(trailHigh[1], high)
+    else 0;
 
-if (position[1] == 0) {
-    # -- FLAT: look for new entries --
-    if (callSignal) {
-        position   = 1;
-        entryPrice = close;
-        trailHigh  = close;
-        trailLow   = close;
-        exitSignal = 0;
-    } else if (putSignal) {
-        position   = -1;
-        entryPrice = close;
-        trailLow   = close;
-        trailHigh  = close;
-        exitSignal = 0;
-    } else {
-        position   = 0;
-        entryPrice = 0;
-        trailHigh  = 0;
-        trailLow   = 0;
-        exitSignal = 0;
-    }
-} else if (position[1] == 1) {
-    # -- LONG CALLS: trail the high, stop if price drops 2 pts from peak --
-    if (low <= newHigh - trailingStopPoints) {
-        # Trailing stop hit - exit calls
-        position   = 0;
-        entryPrice = 0;
-        trailHigh  = 0;
-        trailLow   = 0;
-        exitSignal = 1;
-    } else if (beforeClose == 0) {
-        # End-of-day forced exit
-        position   = 0;
-        entryPrice = 0;
-        trailHigh  = 0;
-        trailLow   = 0;
-        exitSignal = 1;
-    } else {
-        position   = 1;
-        entryPrice = entryPrice[1];
-        trailHigh  = newHigh;
-        trailLow   = 0;
-        exitSignal = 0;
-    }
-} else {
-    # -- LONG PUTS: trail the low, stop if price rises 2 pts from trough --
-    if (high >= newLow + trailingStopPoints) {
-        # Trailing stop hit - exit puts
-        position   = 0;
-        entryPrice = 0;
-        trailHigh  = 0;
-        trailLow   = 0;
-        exitSignal = -1;
-    } else if (beforeClose == 0) {
-        # End-of-day forced exit
-        position   = 0;
-        entryPrice = 0;
-        trailHigh  = 0;
-        trailLow   = 0;
-        exitSignal = -1;
-    } else {
-        position   = -1;
-        entryPrice = entryPrice[1];
-        trailLow   = newLow;
-        trailHigh  = 0;
-        exitSignal = 0;
-    }
-}
+def trailLow =
+    if position[1] == 0 then
+        if putSignal then close
+        else 0
+    else if position[1] == -1 then
+        if high >= Min(trailLow[1], low) + trailingStopPoints then 0
+        else if beforeClose == 0 then 0
+        else Min(trailLow[1], low)
+    else 0;
+
+def exitSignal =
+    if position[1] == 0 then 0
+    else if position[1] == 1 then
+        if low <= Max(trailHigh[1], high) - trailingStopPoints then 1
+        else if beforeClose == 0 then 1
+        else 0
+    else
+        if high >= Min(trailLow[1], low) + trailingStopPoints then -1
+        else if beforeClose == 0 then -1
+        else 0;
 
 # ==============================================================
-# PLOTS -- MACD Panel + Signals
+# PLOTS -- MACD Panel
 # ==============================================================
 
-plot MACD = macdLine;
-MACD.SetDefaultColor(Color.CYAN);
-MACD.SetLineWeight(2);
+plot MACDplot = macdLine;
+MACDplot.SetDefaultColor(Color.CYAN);
+MACDplot.SetLineWeight(2);
 
-plot Signal = signalLine;
-Signal.SetDefaultColor(Color.ORANGE);
-Signal.SetLineWeight(1);
+plot SignalPlot = signalLine;
+SignalPlot.SetDefaultColor(Color.ORANGE);
+SignalPlot.SetLineWeight(1);
 
-plot Histogram = macdHist;
-Histogram.SetPaintingStrategy(PaintingStrategy.HISTOGRAM);
-Histogram.AssignValueColor(
-    if macdHist >= 0 then Color.DARK_GREEN else Color.DARK_RED
-);
+plot Hist = macdHist;
+Hist.SetPaintingStrategy(PaintingStrategy.HISTOGRAM);
+Hist.AssignValueColor(if macdHist >= 0 then Color.DARK_GREEN else Color.DARK_RED);
 
 plot ZeroLine = 0;
 ZeroLine.SetDefaultColor(Color.GRAY);
@@ -222,113 +180,90 @@ PutEntry.SetLineWeight(4);
 
 # -- Exit Markers --
 plot ExitCall = if exitSignal == 1 then macdLine else Double.NaN;
-ExitCall.SetPaintingStrategy(PaintingStrategy.BOOLEAN_ARROW_DOWN);
+ExitCall.SetPaintingStrategy(PaintingStrategy.POINTS);
 ExitCall.SetDefaultColor(Color.YELLOW);
-ExitCall.SetLineWeight(3);
+ExitCall.SetLineWeight(4);
 
 plot ExitPut = if exitSignal == -1 then macdLine else Double.NaN;
-ExitPut.SetPaintingStrategy(PaintingStrategy.BOOLEAN_ARROW_DOWN);
+ExitPut.SetPaintingStrategy(PaintingStrategy.POINTS);
 ExitPut.SetDefaultColor(Color.YELLOW);
-ExitPut.SetLineWeight(3);
+ExitPut.SetLineWeight(4);
 
 # ==============================================================
-# CHART LABELS -- Live Dashboard
+# CHART LABELS
 # ==============================================================
 
 AddLabel(showLabels,
-    if tradingWindow == 0 then "OUTSIDE TRADING WINDOW"
-    else "Step 1: OPEN RANGE SETTLED",
-    if tradingWindow then Color.GREEN else Color.GRAY
-);
+    if tradingWindow then "TRADING WINDOW OPEN" else "OUTSIDE TRADING WINDOW",
+    if tradingWindow then Color.GREEN else Color.GRAY);
 
 AddLabel(showLabels,
     "VWAP: " + Round(vwapValue, 2) +
-    (if aboveVwap then " | BULL ZONE" else if belowVwap then " | BEAR ZONE" else " | NEUTRAL"),
-    if aboveVwap then Color.GREEN else if belowVwap then Color.RED else Color.GRAY
-);
+    if aboveVwap then " BULL" else if belowVwap then " BEAR" else " NEUTRAL",
+    if aboveVwap then Color.GREEN else if belowVwap then Color.RED else Color.GRAY);
 
 AddLabel(showLabels,
-    "+DI: " + Round(plusDI, 1) +
-    " -DI: " + Round(minusDI, 1) +
-    " ADX: " + Round(ADXvalue, 1),
-    if bullDMI then Color.GREEN else if bearDMI then Color.RED else Color.GRAY
-);
+    "+DI:" + Round(plusDI, 1) + " -DI:" + Round(minusDI, 1) + " ADX:" + Round(ADXvalue, 1),
+    if bullDMI then Color.GREEN else if bearDMI then Color.RED else Color.GRAY);
 
 AddLabel(showLabels,
-    "MACD: " + Round(macdLine, 2) + " Sig: " + Round(signalLine, 2),
-    if macdBullCross then Color.GREEN
-    else if macdBearCross then Color.MAGENTA
-    else Color.GRAY
-);
+    "MACD:" + Round(macdLine, 2) + " Sig:" + Round(signalLine, 2),
+    if macdBullCross then Color.GREEN else if macdBearCross then Color.MAGENTA else Color.GRAY);
 
-# -- Position Status --
 AddLabel(showLabels,
-    if position == 1 then "LONG CALLS 30DTE | Trail High: " + Round(trailHigh, 2) +
-                          " | Stop: " + Round(trailHigh - trailingStopPoints, 2)
-    else if position == -1 then "LONG PUTS 0DTE | Trail Low: " + Round(trailLow, 2) +
-                                " | Stop: " + Round(trailLow + trailingStopPoints, 2)
-    else "POSITION: FLAT",
+    if position == 1 then "LONG CALLS | Stop:" + Round(trailHigh - trailingStopPoints, 2)
+    else if position == -1 then "LONG PUTS | Stop:" + Round(trailLow + trailingStopPoints, 2)
+    else "FLAT",
     if position == 1 then Color.GREEN
     else if position == -1 then Color.MAGENTA
-    else Color.DARK_GRAY
-);
+    else Color.DARK_GRAY);
 
-# -- Signal Label --
 AddLabel(showLabels,
-    if callSignal and position[1] == 0 then ">>> BUY 30DTE ATM CALLS <<<"
-    else if putSignal and position[1] == 0 then ">>> BUY 0DTE ATM PUTS <<<"
-    else if exitSignal == 1 then ">>> SOLD CALLS (TRAIL STOP) <<<"
-    else if exitSignal == -1 then ">>> SOLD PUTS (TRAIL STOP) <<<"
+    if callSignal and position[1] == 0 then ">>> BUY 30DTE CALLS <<<"
+    else if putSignal and position[1] == 0 then ">>> BUY 0DTE PUTS <<<"
+    else if exitSignal == 1 then ">>> SOLD CALLS <<<"
+    else if exitSignal == -1 then ">>> SOLD PUTS <<<"
     else "",
     if callSignal then Color.GREEN
     else if putSignal then Color.MAGENTA
-    else Color.YELLOW
-);
+    else Color.YELLOW);
 
 # ==============================================================
 # ALERTS
 # ==============================================================
 
 Alert(enableAlerts and callSignal and position[1] == 0,
-    "SPX BULL: BUY 30DTE ATM CALLS - All conditions met",
-    Alert.BAR, Sound.Ding);
+    "SPX BULL: BUY 30DTE ATM CALLS", Alert.BAR, Sound.Ding);
 
 Alert(enableAlerts and putSignal and position[1] == 0,
-    "SPX BEAR: BUY 0DTE ATM PUTS - All conditions met",
-    Alert.BAR, Sound.Ding);
+    "SPX BEAR: BUY 0DTE ATM PUTS", Alert.BAR, Sound.Ding);
 
 Alert(enableAlerts and exitSignal == 1,
-    "TRAILING STOP HIT: SELL 30DTE CALLS",
-    Alert.BAR, Sound.Ring);
+    "TRAIL STOP: SELL CALLS", Alert.BAR, Sound.Ring);
 
 Alert(enableAlerts and exitSignal == -1,
-    "TRAILING STOP HIT: SELL 0DTE PUTS",
-    Alert.BAR, Sound.Ring);
+    "TRAIL STOP: SELL PUTS", Alert.BAR, Sound.Ring);
 
 # ==============================================================
-# HOW TO SET UP LIVE TRAILING STOP ORDERS IN THINKORSWIM
+# HOW TO SET UP LIVE TRAILING STOP ORDERS
 # ==============================================================
 #
-# thinkScript cannot place live orders. Use the alerts from this
-# study to trigger manual entries, then attach a Trailing Stop:
+# thinkScript cannot place live orders. Use alerts to trigger
+# manual entries, then attach a Trailing Stop:
 #
 # 1. ENTRY:
-#    - When you hear the alert, open the Option Chain
+#    - When alert fires, open the Option Chain
 #    - CALLS: select ATM strike about 30 days out
 #    - PUTS:  select ATM strike expiring TODAY (0DTE)
-#    - Click Buy to open the order ticket
 #
-# 2. TRAILING STOP (attach as conditional exit):
+# 2. TRAILING STOP:
 #    - Right-click your order > Create Opposite Order
 #    - Change order type to Trailing Stop
-#    - Set Trail Amount = 2.00 (points)
+#    - Set Trail Amount = 2.00
 #    - Under Advanced Order > 1st Triggers 2nd
-#    - This auto-submits the trailing stop once your entry fills
 #
-# 3. BRACKET ORDER (alternative - single ticket):
-#    - Right-click bid/ask in Option Chain
-#    - Select Buy Custom > With Trailing Stop
-#    - Set trail = 2.00 pts
-#    - Submit as one bracket order
+# 3. BRACKET ORDER (alternative):
+#    - Right-click bid/ask > Buy Custom > With Trailing Stop
+#    - Set trail = 2.00 pts > Submit
 #
 # ==============================================================
