@@ -72,9 +72,8 @@ def DX = if (plusDI + minusDI > 0)
 def ADXvalue = WildersAverage(DX, adxLength);
 
 def adxStrong  = ADXvalue > adxTrendThreshold;
-def adxRising  = ADXvalue > ADXvalue[1];
-def bullDMI    = plusDI > minusDI and adxStrong and adxRising;
-def bearDMI    = minusDI > plusDI and adxStrong and adxRising;
+def bullDMI    = plusDI > minusDI and adxStrong;
+def bearDMI    = minusDI > plusDI and adxStrong;
 
 # ==============================================================
 # STEP 4 -- MACD CROSS
@@ -84,15 +83,19 @@ def macdLine   = ExpAverage(close, macdFastLength) - ExpAverage(close, macdSlowL
 def signalLine = ExpAverage(macdLine, macdSignalLength);
 def macdHist   = macdLine - signalLine;
 
-def macdBullCross = macdLine crosses above signalLine;
-def macdBearCross = macdLine crosses below signalLine;
+# Cross happened within the last 3 bars (gives conditions time to align)
+def macdBullCrossNow = macdLine crosses above signalLine;
+def macdBearCrossNow = macdLine crosses below signalLine;
+def macdBullCross = macdBullCrossNow or macdBullCrossNow[1] or macdBullCrossNow[2];
+def macdBearCross = macdBearCrossNow or macdBearCrossNow[1] or macdBearCrossNow[2];
 
 # ==============================================================
 # STEP 5 -- ENTRY SIGNALS
 # ==============================================================
 
-def callSignal = tradingWindow and aboveVwap and bullDMI and macdBullCross;
-def putSignal  = tradingWindow and belowVwap and bearDMI and macdBearCross;
+# MACD must still be on the correct side when signal fires
+def callSignal = tradingWindow and aboveVwap and bullDMI and macdBullCross and macdLine >= signalLine;
+def putSignal  = tradingWindow and belowVwap and bearDMI and macdBearCross and macdLine <= signalLine;
 
 # ==============================================================
 # POSITION & TRAILING STOP
