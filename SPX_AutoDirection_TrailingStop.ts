@@ -43,8 +43,6 @@ input enableAlerts         = yes;
 # ==============================================================
 # FILTER 1 -- VWAP (The Institutional Line)
 # ==============================================================
-# If price is above VWAP, only look for Calls.
-# If price is below VWAP, only look for Puts.
 
 def vwapValue = vwap();
 def aboveVwap = close > vwapValue;
@@ -53,8 +51,7 @@ def belowVwap = close < vwapValue;
 # ==============================================================
 # FILTER 2 -- ADX (The Power Meter)
 # ==============================================================
-# ADX must be > 20 and rising.
-# If ADX is flat or below 20, SPX is chopping. No trade.
+# ADX must be > 20 and trending upward (higher than 3 bars ago)
 
 def hiDiff  = high - high[1];
 def loDiff  = low[1] - low;
@@ -69,14 +66,12 @@ def DX = if (plusDI + minusDI > 0)
 def ADXvalue = WildersAverage(DX, adxLength);
 
 def adxStrong = ADXvalue > adxTrendThreshold;
-def adxRising = ADXvalue > ADXvalue[1];
+def adxRising = ADXvalue > ADXvalue[3];
 def adxReady  = adxStrong and adxRising;
 
 # ==============================================================
 # FILTER 3 -- DMI (The Scissor Check)
 # ==============================================================
-# Calls: +DI must be above -DI
-# Puts: -DI must be above +DI
 
 def bullDMI = plusDI > minusDI;
 def bearDMI = minusDI > plusDI;
@@ -84,7 +79,7 @@ def bearDMI = minusDI > plusDI;
 # ==============================================================
 # FILTER 4 -- MACD (The Firing Pin)
 # ==============================================================
-# Wait for a crossover. 3-bar window so filters can align.
+# Crossover within the last 5 bars so filters have time to align
 
 def macdLine   = ExpAverage(close, macdFastLength) - ExpAverage(close, macdSlowLength);
 def signalLine = ExpAverage(macdLine, macdSignalLength);
@@ -92,17 +87,23 @@ def macdHist   = macdLine - signalLine;
 
 def macdBullCrossNow = macdLine crosses above signalLine;
 def macdBearCrossNow = macdLine crosses below signalLine;
-def macdBullCross = macdBullCrossNow or macdBullCrossNow[1] or macdBullCrossNow[2];
-def macdBearCross = macdBearCrossNow or macdBearCrossNow[1] or macdBearCrossNow[2];
+def macdBullCross = macdBullCrossNow or macdBullCrossNow[1] or macdBullCrossNow[2]
+                    or macdBullCrossNow[3] or macdBullCrossNow[4];
+def macdBearCross = macdBearCrossNow or macdBearCrossNow[1] or macdBearCrossNow[2]
+                    or macdBearCrossNow[3] or macdBearCrossNow[4];
 
 # ==============================================================
 # FILTER 5 -- RSI (The Exhaustion Check)
 # ==============================================================
-# Do not buy Calls if RSI > 70 (overbought).
-# Do not buy Puts if RSI < 30 (oversold).
-# 0DTEs are prone to mean reversion at extremes.
+# Computed manually to avoid built-in RSI() reference issues
 
-def rsiValue = RSI(rsiLength);
+def rsiUp   = Max(close - close[1], 0);
+def rsiDown = Max(close[1] - close, 0);
+def avgUp   = WildersAverage(rsiUp, rsiLength);
+def avgDown = WildersAverage(rsiDown, rsiLength);
+def rs      = if avgDown > 0 then avgUp / avgDown else 0;
+def rsiValue = if avgDown == 0 then 100 else 100 - (100 / (1 + rs));
+
 def rsiCallOK = rsiValue < rsiOverbought;
 def rsiPutOK  = rsiValue > rsiOversold;
 
@@ -119,10 +120,24 @@ def putSignal  = belowVwap and adxReady and bearDMI
                  and rsiPutOK;
 
 # ==============================================================
+# FILTER PASS COUNT (for debugging)
+# ==============================================================
+
+def callFilters = (if aboveVwap then 1 else 0)
+               + (if adxReady then 1 else 0)
+               + (if bullDMI then 1 else 0)
+               + (if macdBullCross and macdLine >= signalLine then 1 else 0)
+               + (if rsiCallOK then 1 else 0);
+
+def putFilters = (if belowVwap then 1 else 0)
+              + (if adxReady then 1 else 0)
+              + (if bearDMI then 1 else 0)
+              + (if macdBearCross and macdLine <= signalLine then 1 else 0)
+              + (if rsiPutOK then 1 else 0);
+
+# ==============================================================
 # POSITION & TRAILING STOP
 # ==============================================================
-# trailHigh > 0 = in a CALL position (value = running high)
-# trailLow  > 0 = in a PUT position  (value = running low)
 
 def beforeClose = SecondsTillTime(1555) > 0;
 
@@ -170,12 +185,14 @@ ZeroLine.SetDefaultColor(Color.GRAY);
 ZeroLine.SetStyle(Curve.SHORT_DASH);
 
 # -- Entry Arrows --
-plot CallEntry = if callSignal and position[1] == 0 then macdLine else Double.NaN;
+plot CallEntry = if callSignal and trailHigh[1] == 0 and trailLow[1] == 0
+                 then macdLine else Double.NaN;
 CallEntry.SetPaintingStrategy(PaintingStrategy.ARROW_UP);
 CallEntry.SetDefaultColor(Color.GREEN);
 CallEntry.SetLineWeight(4);
 
-plot PutEntry = if putSignal and position[1] == 0 then macdLine else Double.NaN;
+plot PutEntry = if putSignal and trailHigh[1] == 0 and trailLow[1] == 0
+                then macdLine else Double.NaN;
 PutEntry.SetPaintingStrategy(PaintingStrategy.ARROW_DOWN);
 PutEntry.SetDefaultColor(Color.MAGENTA);
 PutEntry.SetLineWeight(4);
@@ -202,7 +219,7 @@ AddLabel(showLabels,
 
 AddLabel(showLabels,
     "F2 ADX:" + Round(ADXvalue, 1) +
-    if adxReady then " READY" else if adxStrong then " FLAT" else " CHOP",
+    if adxReady then " TRENDING" else if adxStrong then " FLAT" else " CHOP",
     if adxReady then Color.GREEN else Color.GRAY);
 
 AddLabel(showLabels,
@@ -221,6 +238,15 @@ AddLabel(showLabels,
     else if rsiValue <= rsiOversold then Color.RED
     else Color.GREEN);
 
+# -- Filter count: shows how many of 5 filters are passing --
+AddLabel(showLabels,
+    if aboveVwap then "CALL " + callFilters + "/5"
+    else if belowVwap then "PUT " + putFilters + "/5"
+    else "0/5",
+    if callFilters == 5 or putFilters == 5 then Color.GREEN
+    else if callFilters >= 4 or putFilters >= 4 then Color.YELLOW
+    else Color.GRAY);
+
 AddLabel(showLabels,
     if position == 1 then "LONG CALLS | Stop:" + Round(trailHigh - trailingStopPoints, 2)
     else if position == -1 then "LONG PUTS | Stop:" + Round(trailLow + trailingStopPoints, 2)
@@ -230,8 +256,8 @@ AddLabel(showLabels,
     else Color.DARK_GRAY);
 
 AddLabel(showLabels,
-    if callSignal and position[1] == 0 then ">>> BUY CALLS <<<"
-    else if putSignal and position[1] == 0 then ">>> BUY PUTS <<<"
+    if callSignal and trailHigh[1] == 0 and trailLow[1] == 0 then ">>> BUY CALLS <<<"
+    else if putSignal and trailHigh[1] == 0 and trailLow[1] == 0 then ">>> BUY PUTS <<<"
     else if exitSignal == 1 then ">>> SOLD CALLS <<<"
     else if exitSignal == -1 then ">>> SOLD PUTS <<<"
     else "",
@@ -243,10 +269,10 @@ AddLabel(showLabels,
 # ALERTS
 # ==============================================================
 
-Alert(enableAlerts and callSignal and position[1] == 0,
+Alert(enableAlerts and callSignal and trailHigh[1] == 0 and trailLow[1] == 0,
     "ALL 5 FILTERS PASS: BUY CALLS", Alert.BAR, Sound.Ding);
 
-Alert(enableAlerts and putSignal and position[1] == 0,
+Alert(enableAlerts and putSignal and trailHigh[1] == 0 and trailLow[1] == 0,
     "ALL 5 FILTERS PASS: BUY PUTS", Alert.BAR, Sound.Ding);
 
 Alert(enableAlerts and exitSignal == 1,
@@ -264,7 +290,7 @@ Alert(enableAlerts and exitSignal == -1,
 #
 # 1. ENTRY:
 #    - When alert fires, open the Option Chain
-#    - CALLS: select ATM strike about 30 days out
+#    - CALLS: select ATM strike
 #    - PUTS:  select ATM strike expiring TODAY (0DTE)
 #
 # 2. TRAILING STOP:
