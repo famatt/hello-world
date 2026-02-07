@@ -1,25 +1,24 @@
 #
-# SPX Auto Direction -- 30DTE Calls / 0DTE Puts + 2-Point Trailing Stop
+# SPX 5-Filter 0DTE Options Strategy + 2-Point Trailing Stop
 # ----------------------------------------------------------------------
 #
-# LOGIC OVERVIEW
+# FILTER LOGIC
 # ----------------------------------------------------------------------
-# Condition         | Bull Setup (Calls 30DTE) | Bear Setup (Puts 0DTE)
-# ------------------+--------------------------+-----------------------
-# Step 1: Time      | After 9:45 AM ET         | After 9:45 AM ET
-# Step 2: VWAP      | Price ABOVE VWAP         | Price BELOW VWAP
-# Step 3: ADX/DMI   | +DI on top, ADX > 25     | -DI on top, ADX > 25
-# Step 4: MACD      | MACD crosses ABOVE signal| MACD crosses BELOW signal
-# Step 5: Action    | BUY 30DTE ATM CALLS      | BUY 0DTE ATM PUTS
-# Exit              | Trailing Stop 2 pts       | Trailing Stop 2 pts
+# Filter | Calls                     | Puts
+# -------+---------------------------+---------------------------
+# 1 VWAP | Price ABOVE VWAP          | Price BELOW VWAP
+# 2 ADX  | ADX > 20 and rising       | ADX > 20 and rising
+# 3 DMI  | +DI above -DI             | -DI above +DI
+# 4 MACD | Bullish crossover         | Bearish crossover
+# 5 RSI  | RSI must be < 70          | RSI must be > 30
+# -------+---------------------------+---------------------------
+# Exit   | Trailing Stop 2 pts       | Trailing Stop 2 pts
 # ----------------------------------------------------------------------
 #
 # USAGE
-#   1. In thinkorswim go to Studies > Edit Studies > Create
-#   2. Paste this entire script and click OK
-#   3. Apply to an SPX intraday chart (1-min or 5-min recommended)
-#   4. When an alert fires, manually place the order and attach
-#      a Trailing Stop (see instructions at the bottom of this file)
+#   1. In thinkorswim: Studies > Edit Studies > Create
+#   2. Paste this script and click OK
+#   3. Apply to SPX intraday chart (1-min or 2-min recommended)
 #
 # ----------------------------------------------------------------------
 
@@ -30,34 +29,32 @@ declare lower;
 # ==============================================================
 
 input adxLength            = 14;
-input adxTrendThreshold    = 25;
+input adxTrendThreshold    = 20;
 input macdFastLength       = 12;
 input macdSlowLength       = 26;
 input macdSignalLength     = 9;
-input entryTime            = 0945;
+input rsiLength            = 14;
+input rsiOverbought        = 70;
+input rsiOversold          = 30;
 input trailingStopPoints   = 2.0;
 input showLabels           = yes;
 input enableAlerts         = yes;
 
 # ==============================================================
-# STEP 1 -- TIME FILTER
+# FILTER 1 -- VWAP (The Institutional Line)
 # ==============================================================
-
-def pastOpeningRange = SecondsFromTime(entryTime) >= 0;
-def beforeClose     = SecondsTillTime(1555) > 0;
-def tradingWindow   = pastOpeningRange and beforeClose;
-
-# ==============================================================
-# STEP 2 -- VWAP DIRECTION
-# ==============================================================
+# If price is above VWAP, only look for Calls.
+# If price is below VWAP, only look for Puts.
 
 def vwapValue = vwap();
 def aboveVwap = close > vwapValue;
 def belowVwap = close < vwapValue;
 
 # ==============================================================
-# STEP 3 -- ADX / DMI
+# FILTER 2 -- ADX (The Power Meter)
 # ==============================================================
+# ADX must be > 20 and rising.
+# If ADX is flat or below 20, SPX is chopping. No trade.
 
 def hiDiff  = high - high[1];
 def loDiff  = low[1] - low;
@@ -71,38 +68,63 @@ def DX = if (plusDI + minusDI > 0)
          else 0;
 def ADXvalue = WildersAverage(DX, adxLength);
 
-def adxStrong  = ADXvalue > adxTrendThreshold;
-def bullDMI    = plusDI > minusDI and adxStrong;
-def bearDMI    = minusDI > plusDI and adxStrong;
+def adxStrong = ADXvalue > adxTrendThreshold;
+def adxRising = ADXvalue > ADXvalue[1];
+def adxReady  = adxStrong and adxRising;
 
 # ==============================================================
-# STEP 4 -- MACD CROSS
+# FILTER 3 -- DMI (The Scissor Check)
 # ==============================================================
+# Calls: +DI must be above -DI
+# Puts: -DI must be above +DI
+
+def bullDMI = plusDI > minusDI;
+def bearDMI = minusDI > plusDI;
+
+# ==============================================================
+# FILTER 4 -- MACD (The Firing Pin)
+# ==============================================================
+# Wait for a crossover. 3-bar window so filters can align.
 
 def macdLine   = ExpAverage(close, macdFastLength) - ExpAverage(close, macdSlowLength);
 def signalLine = ExpAverage(macdLine, macdSignalLength);
 def macdHist   = macdLine - signalLine;
 
-# Cross happened within the last 3 bars (gives conditions time to align)
 def macdBullCrossNow = macdLine crosses above signalLine;
 def macdBearCrossNow = macdLine crosses below signalLine;
 def macdBullCross = macdBullCrossNow or macdBullCrossNow[1] or macdBullCrossNow[2];
 def macdBearCross = macdBearCrossNow or macdBearCrossNow[1] or macdBearCrossNow[2];
 
 # ==============================================================
-# STEP 5 -- ENTRY SIGNALS
+# FILTER 5 -- RSI (The Exhaustion Check)
+# ==============================================================
+# Do not buy Calls if RSI > 70 (overbought).
+# Do not buy Puts if RSI < 30 (oversold).
+# 0DTEs are prone to mean reversion at extremes.
+
+def rsiValue = RSI(rsiLength);
+def rsiCallOK = rsiValue < rsiOverbought;
+def rsiPutOK  = rsiValue > rsiOversold;
+
+# ==============================================================
+# ENTRY SIGNALS -- All 5 Filters Must Pass
 # ==============================================================
 
-# MACD must still be on the correct side when signal fires
-def callSignal = tradingWindow and aboveVwap and bullDMI and macdBullCross and macdLine >= signalLine;
-def putSignal  = tradingWindow and belowVwap and bearDMI and macdBearCross and macdLine <= signalLine;
+def callSignal = aboveVwap and adxReady and bullDMI
+                 and macdBullCross and macdLine >= signalLine
+                 and rsiCallOK;
+
+def putSignal  = belowVwap and adxReady and bearDMI
+                 and macdBearCross and macdLine <= signalLine
+                 and rsiPutOK;
 
 # ==============================================================
 # POSITION & TRAILING STOP
 # ==============================================================
-# trailHigh > 0 means we are in a CALL position (value = highest price since entry)
-# trailLow  > 0 means we are in a PUT position  (value = lowest price since entry)
-# No cross-references: trailHigh is defined first, trailLow second.
+# trailHigh > 0 = in a CALL position (value = running high)
+# trailLow  > 0 = in a PUT position  (value = running low)
+
+def beforeClose = SecondsTillTime(1555) > 0;
 
 def trailHigh =
     if trailHigh[1] > 0 then
@@ -174,21 +196,30 @@ ExitPut.SetLineWeight(4);
 # ==============================================================
 
 AddLabel(showLabels,
-    if tradingWindow then "TRADING WINDOW OPEN" else "OUTSIDE TRADING WINDOW",
-    if tradingWindow then Color.GREEN else Color.GRAY);
-
-AddLabel(showLabels,
-    "VWAP: " + Round(vwapValue, 2) +
-    if aboveVwap then " BULL" else if belowVwap then " BEAR" else " NEUTRAL",
+    "F1 VWAP:" + Round(vwapValue, 2) +
+    if aboveVwap then " ABOVE" else if belowVwap then " BELOW" else " =",
     if aboveVwap then Color.GREEN else if belowVwap then Color.RED else Color.GRAY);
 
 AddLabel(showLabels,
-    "+DI:" + Round(plusDI, 1) + " -DI:" + Round(minusDI, 1) + " ADX:" + Round(ADXvalue, 1),
+    "F2 ADX:" + Round(ADXvalue, 1) +
+    if adxReady then " READY" else if adxStrong then " FLAT" else " CHOP",
+    if adxReady then Color.GREEN else Color.GRAY);
+
+AddLabel(showLabels,
+    "F3 +DI:" + Round(plusDI, 1) + " -DI:" + Round(minusDI, 1),
     if bullDMI then Color.GREEN else if bearDMI then Color.RED else Color.GRAY);
 
 AddLabel(showLabels,
-    "MACD:" + Round(macdLine, 2) + " Sig:" + Round(signalLine, 2),
-    if macdBullCross then Color.GREEN else if macdBearCross then Color.MAGENTA else Color.GRAY);
+    "F4 MACD:" + Round(macdLine, 2) + " Sig:" + Round(signalLine, 2),
+    if macdBullCross and macdLine >= signalLine then Color.GREEN
+    else if macdBearCross and macdLine <= signalLine then Color.MAGENTA
+    else Color.GRAY);
+
+AddLabel(showLabels,
+    "F5 RSI:" + Round(rsiValue, 1),
+    if rsiValue >= rsiOverbought then Color.RED
+    else if rsiValue <= rsiOversold then Color.RED
+    else Color.GREEN);
 
 AddLabel(showLabels,
     if position == 1 then "LONG CALLS | Stop:" + Round(trailHigh - trailingStopPoints, 2)
@@ -199,8 +230,8 @@ AddLabel(showLabels,
     else Color.DARK_GRAY);
 
 AddLabel(showLabels,
-    if callSignal and position[1] == 0 then ">>> BUY 30DTE CALLS <<<"
-    else if putSignal and position[1] == 0 then ">>> BUY 0DTE PUTS <<<"
+    if callSignal and position[1] == 0 then ">>> BUY CALLS <<<"
+    else if putSignal and position[1] == 0 then ">>> BUY PUTS <<<"
     else if exitSignal == 1 then ">>> SOLD CALLS <<<"
     else if exitSignal == -1 then ">>> SOLD PUTS <<<"
     else "",
@@ -213,10 +244,10 @@ AddLabel(showLabels,
 # ==============================================================
 
 Alert(enableAlerts and callSignal and position[1] == 0,
-    "SPX BULL: BUY 30DTE ATM CALLS", Alert.BAR, Sound.Ding);
+    "ALL 5 FILTERS PASS: BUY CALLS", Alert.BAR, Sound.Ding);
 
 Alert(enableAlerts and putSignal and position[1] == 0,
-    "SPX BEAR: BUY 0DTE ATM PUTS", Alert.BAR, Sound.Ding);
+    "ALL 5 FILTERS PASS: BUY PUTS", Alert.BAR, Sound.Ding);
 
 Alert(enableAlerts and exitSignal == 1,
     "TRAIL STOP: SELL CALLS", Alert.BAR, Sound.Ring);
