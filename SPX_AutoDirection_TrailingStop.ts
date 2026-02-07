@@ -97,55 +97,32 @@ def putSignal  = tradingWindow and belowVwap and bearDMI and macdBearCross;
 # ==============================================================
 # POSITION & TRAILING STOP
 # ==============================================================
-# Each variable uses its own inline if/then/else with self-reference.
-# This is the reliable recursive pattern for thinkScript.
-#
-# position:  0 = flat, 1 = long calls, -1 = long puts
-
-def position =
-    if position[1] == 0 then
-        if callSignal then 1
-        else if putSignal then -1
-        else 0
-    else if position[1] == 1 then
-        if low <= Max(trailHigh[1], high) - trailingStopPoints then 0
-        else if beforeClose == 0 then 0
-        else 1
-    else
-        if high >= Min(trailLow[1], low) + trailingStopPoints then 0
-        else if beforeClose == 0 then 0
-        else -1;
+# trailHigh > 0 means we are in a CALL position (value = highest price since entry)
+# trailLow  > 0 means we are in a PUT position  (value = lowest price since entry)
+# No cross-references: trailHigh is defined first, trailLow second.
 
 def trailHigh =
-    if position[1] == 0 then
-        if callSignal then close
-        else 0
-    else if position[1] == 1 then
+    if trailHigh[1] > 0 then
         if low <= Max(trailHigh[1], high) - trailingStopPoints then 0
         else if beforeClose == 0 then 0
         else Max(trailHigh[1], high)
+    else if callSignal then close
     else 0;
 
 def trailLow =
-    if position[1] == 0 then
-        if putSignal then close
-        else 0
-    else if position[1] == -1 then
+    if trailLow[1] > 0 then
         if high >= Min(trailLow[1], low) + trailingStopPoints then 0
         else if beforeClose == 0 then 0
         else Min(trailLow[1], low)
+    else if putSignal and trailHigh == 0 then close
     else 0;
 
+def position = if trailHigh > 0 then 1 else if trailLow > 0 then -1 else 0;
+
 def exitSignal =
-    if position[1] == 0 then 0
-    else if position[1] == 1 then
-        if low <= Max(trailHigh[1], high) - trailingStopPoints then 1
-        else if beforeClose == 0 then 1
-        else 0
-    else
-        if high >= Min(trailLow[1], low) + trailingStopPoints then -1
-        else if beforeClose == 0 then -1
-        else 0;
+    if trailHigh[1] > 0 and trailHigh == 0 then 1
+    else if trailLow[1] > 0 and trailLow == 0 then -1
+    else 0;
 
 # ==============================================================
 # PLOTS -- MACD Panel
