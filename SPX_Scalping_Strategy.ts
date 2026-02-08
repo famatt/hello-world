@@ -24,7 +24,7 @@
 #
 # ----------------------------------------------------------------------
 
-declare upper;
+declare lower;
 
 # ==============================================================
 # INPUTS
@@ -185,45 +185,38 @@ AddOrder(OrderType.BUY_TO_CLOSE, putExit,
     close, contracts, Color.YELLOW, Color.YELLOW, "SELL PUTS (TRAIL)");
 
 # ==============================================================
-# VISUAL ARROWS
+# VISUAL ARROWS (Lower Panel)
 # ==============================================================
+# Values: +1 = call entry, -1 = put entry
+#         +0.5 = call exit, -0.5 = put exit
 
 plot CallArrow = if callSignal and trailHigh[1] == 0 and trailLow[1] == 0
-                 then low - (TickSize() * 30) else Double.NaN;
+                 then 1 else Double.NaN;
 CallArrow.SetPaintingStrategy(PaintingStrategy.ARROW_UP);
 CallArrow.SetDefaultColor(Color.GREEN);
 CallArrow.SetLineWeight(5);
 
 plot PutArrow = if putSignal and trailHigh[1] == 0 and trailLow[1] == 0
-                then high + (TickSize() * 30) else Double.NaN;
+                then -1 else Double.NaN;
 PutArrow.SetPaintingStrategy(PaintingStrategy.ARROW_DOWN);
 PutArrow.SetDefaultColor(Color.RED);
 PutArrow.SetLineWeight(5);
 
-plot CallExitArrow = if callExit then high + (TickSize() * 30) else Double.NaN;
+plot CallExitArrow = if callExit then 0.5 else Double.NaN;
 CallExitArrow.SetPaintingStrategy(PaintingStrategy.ARROW_DOWN);
 CallExitArrow.SetDefaultColor(Color.YELLOW);
 CallExitArrow.SetLineWeight(4);
 
-plot PutExitArrow = if putExit then low - (TickSize() * 30) else Double.NaN;
+plot PutExitArrow = if putExit then -0.5 else Double.NaN;
 PutExitArrow.SetPaintingStrategy(PaintingStrategy.ARROW_UP);
 PutExitArrow.SetDefaultColor(Color.YELLOW);
 PutExitArrow.SetLineWeight(4);
 
-# -- EMA lines --
-plot EMA9line = ema9;
-EMA9line.SetDefaultColor(Color.CYAN);
-EMA9line.SetLineWeight(1);
-
-plot EMA21line = ema21;
-EMA21line.SetDefaultColor(Color.ORANGE);
-EMA21line.SetLineWeight(1);
-
-# -- VWAP line --
-plot VWAPline = vwapValue;
-VWAPline.SetDefaultColor(Color.WHITE);
-VWAPline.SetStyle(Curve.MEDIUM_DASH);
-VWAPline.SetLineWeight(2);
+# -- Zero reference line --
+plot ZeroLine = 0;
+ZeroLine.SetDefaultColor(Color.GRAY);
+ZeroLine.SetStyle(Curve.SHORT_DASH);
+ZeroLine.SetLineWeight(1);
 
 # ==============================================================
 # DASHBOARD LABELS
