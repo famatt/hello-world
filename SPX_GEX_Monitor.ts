@@ -1,60 +1,72 @@
 #
-# SPX Gamma Exposure (GEX) Monitor
-# Continuous proxy-based GEX estimation for SPX
+# SPX Gamma Exposure (GEX) Monitor v2
+# Hybrid: Manual GEX Levels + Real-Time Proxy Signals
 # ------------------------------------------------------------------
 #
-# NOTE: True GEX requires full options chain data (open interest
-# and gamma at every strike). thinkScript cannot access this data
-# directly. This study uses proxy methods to estimate the GEX
-# regime, which are well-established in quantitative research:
+# True GEX requires full options chain data (OI + gamma per strike)
+# that thinkScript cannot access. This study combines the best
+# available approach: manually-input daily GEX levels from a data
+# provider (SpotGamma, Squeezemetrics, etc.) with real-time proxy
+# signals that continuously confirm or challenge the regime.
 #
-# PRIMARY METHOD: IV vs RV Spread
-#   When implied volatility exceeds realized volatility, options
-#   are "expensive" -- market makers are likely net long gamma.
-#   They hedge by selling into rallies and buying dips, creating
-#   a mean-reverting environment (positive GEX).
+# COMPONENTS:
+#   1. Manual GEX Levels -- zero-gamma flip, call wall, put wall,
+#      vol trigger. Update these each morning from your provider.
+#   2. VIX Term Structure -- VIX vs VIX9D ratio detects hedging
+#      demand shifts (backwardation = fear/negative GEX)
+#   3. IV vs RV Spread -- when IV exceeds RV, positive GEX regime;
+#      when RV exceeds IV, negative GEX (dealer hedging amplifies)
+#   4. Gamma Pinning -- how tightly price clusters near key strikes
+#   5. Volume Surge Detection -- flags dealer hedging near levels
+#   6. Composite Confidence -- scores all signals together
 #
-#   When realized vol exceeds implied vol, options are "cheap" --
-#   market makers are likely net short gamma. Their hedging
-#   amplifies directional moves, creating a trending environment
-#   (negative GEX).
+# READING THE CHART:
+#   - Histogram = price distance from zero-gamma level (in points)
+#   - Above zero = positive GEX zone (mean-revert, fade moves)
+#   - Below zero = negative GEX zone (trending, follow momentum)
+#   - Green dashed line = call wall (hedging resistance)
+#   - Red dashed line = put wall (hedging support)
+#   - Magenta dashed line = vol trigger (selling accelerates below)
+#   - Green/Red arrows = gamma regime flip (key signal!)
+#   - Yellow dots = volume surge near a GEX level
 #
-# SECONDARY: Gamma Pinning Score
-#   Measures how tightly SPX clusters near key option strikes.
-#   Strong pinning suggests high positive gamma at nearby levels.
-#
-# TERTIARY: Dealer Flow Absorption
-#   When high volume produces small price moves, dealers are
-#   absorbing order flow (positive GEX). When volume amplifies
-#   moves, dealers are adding to momentum (negative GEX).
-#
-# USAGE:
+# SETUP:
 #   1. thinkorswim: Studies > Edit Studies > Studies tab > Create
 #   2. Paste this script and click OK
 #   3. Apply to SPX intraday chart (1-min, 2-min, or 5-min)
-#   4. Green bars = positive GEX (fade moves, buy dips, sell rips)
-#   5. Red bars = negative GEX (follow momentum, trade breakouts)
+#   4. Right-click study > Edit properties > set daily GEX levels
+#   5. Get levels from: spotgamma.com, squeezemetrics.com, or
+#      similar GEX data provider each morning before open
 #
 # ------------------------------------------------------------------
 
 declare lower;
 
 # ==============================================================
-# INPUTS
+# DAILY GEX LEVELS (update each morning)
+# ==============================================================
+# Get these from SpotGamma, Squeezemetrics, or your provider
+# Right-click the study > Edit properties to update
+
+input zeroGammaLevel  = 6000;   # Gamma Flip -- regime change level
+input callWallLevel   = 6050;   # Call Wall -- resistance in +GEX
+input putWallLevel    = 5950;   # Put Wall -- support in +GEX
+input volTriggerLevel = 5900;   # Vol Trigger -- selling accelerates
+
+# ==============================================================
+# STUDY PARAMETERS
 # ==============================================================
 
-input rvLookback       = 20;     # Realized vol lookback (bars)
-input smoothPeriod     = 5;      # Smoothing period
-input keyStrikeSpacing = 25;     # Key strike interval (25 or 50)
-input pinLookback      = 20;     # Pinning detection lookback
-input posThreshold     = 2.0;    # Positive GEX threshold
-input negThreshold     = -2.0;   # Negative GEX threshold
+input rvLookback       = 20;    # Realized vol lookback (bars)
+input smoothPeriod     = 5;     # Smoothing period
+input keyStrikeSpacing = 25;    # Key strike interval for pinning
+input pinLookback      = 20;    # Pinning detection lookback
 input showLabels       = yes;
+input showAlerts       = yes;
 
 # ==============================================================
 # CHART TIMEFRAME DETECTION
 # ==============================================================
-# Auto-detect bars per year for proper RV annualization
 
 def aggPeriod = GetAggregationPeriod();
 def barsPerDay =
@@ -70,50 +82,55 @@ def barsPerDay =
 def barsPerYear = barsPerDay * 252;
 
 # ==============================================================
-# IMPLIED VOLATILITY
+# 1. PRICE vs GEX LEVELS
 # ==============================================================
-# imp_volatility() returns annualized IV as a decimal
-# For SPX this effectively reflects VIX
-# Falls back to VIX cross-reference if unavailable
+
+def gammaDistance = close - zeroGammaLevel;
+def gammaSmooth  = ExpAverage(gammaDistance, smoothPeriod);
+
+def aboveZeroGamma = close > zeroGammaLevel;
+def belowZeroGamma = close < zeroGammaLevel;
+def gammaFlip = aboveZeroGamma != aboveZeroGamma[1];
+
+def nearCallWall  = AbsValue(close - callWallLevel) < 10;
+def nearPutWall   = AbsValue(close - putWallLevel) < 10;
+def nearZeroGamma = AbsValue(close - zeroGammaLevel) < 10;
+def belowVolTrigger = close < volTriggerLevel;
+
+# ==============================================================
+# 2. VIX TERM STRUCTURE (VIX vs VIX9D)
+# ==============================================================
+# Normal contango: VIX9D < VIX (calm, positive GEX regime)
+# Inverted backwardation: VIX9D > VIX (fear, negative GEX regime)
+# This is one of the strongest real-time GEX regime indicators
+
+def vixValue  = close("VIX");
+def vix9dValue = close("VIX9D");
+def termRatio = if vixValue > 0 then vix9dValue / vixValue else 1;
+def termContango      = termRatio < 0.95;
+def termBackwardation = termRatio > 1.05;
+
+# ==============================================================
+# 3. IV vs RV SPREAD
+# ==============================================================
 
 def ivFunc = imp_volatility();
-def ivVIX = close("VIX") / 100;
-def iv = if IsNaN(ivFunc) or ivFunc <= 0 then ivVIX else ivFunc;
+def ivFallback = vixValue / 100;
+def iv = if IsNaN(ivFunc) or ivFunc <= 0 then ivFallback else ivFunc;
 def ivPct = iv * 100;
 def ivSmooth = ExpAverage(ivPct, smoothPeriod);
 
-# ==============================================================
-# REALIZED VOLATILITY (annualized, close-to-close)
-# ==============================================================
-
 def logRet = Log(close / close[1]);
 def rvPerBar = StDev(logRet, rvLookback);
-def rvAnnualized = rvPerBar * Sqrt(barsPerYear);
-def rvPct = rvAnnualized * 100;
+def rvAnn = rvPerBar * Sqrt(barsPerYear);
+def rvPct = rvAnn * 100;
 def rvSmooth = ExpAverage(rvPct, smoothPeriod);
 
-# ==============================================================
-# GEX PROXY: IV - RV SPREAD
-# ==============================================================
-# Positive spread = IV > RV = positive GEX (mean reversion)
-#   Dealers long gamma: sell rallies, buy dips
-#   Price pins near strikes, range compresses
-#
-# Negative spread = RV > IV = negative GEX (trending)
-#   Dealers short gamma: buy rallies, sell dips
-#   Price breaks through levels, range expands
-
-def gexRaw = ivSmooth - rvSmooth;
-def gexSignal = ExpAverage(gexRaw, smoothPeriod * 2);
-
-def isPositiveGEX = gexRaw > posThreshold;
-def isNegativeGEX = gexRaw < negThreshold;
+def ivRvSpread = ivSmooth - rvSmooth;
 
 # ==============================================================
-# GAMMA PINNING SCORE
+# 4. GAMMA PINNING
 # ==============================================================
-# Measures how tightly price clusters near key option strikes
-# 100 = right at a strike, 0 = halfway between strikes
 
 def nearStrike = Round(close / keyStrikeSpacing, 0) * keyStrikeSpacing;
 def distFromStrike = AbsValue(close - nearStrike);
@@ -124,127 +141,222 @@ def pinRaw = if halfSpacing > 0
 def pinAvg = Average(pinRaw, pinLookback);
 
 # ==============================================================
-# DEALER FLOW ABSORPTION
+# 5. VOLUME SURGE NEAR GEX LEVELS
 # ==============================================================
-# High volume + small move = dealers absorbing (positive GEX)
-# Volume amplifying moves = dealers adding momentum (negative GEX)
+# Spikes in volume near key levels = dealer hedging footprint
 
-def barMove = AbsValue(close - open);
-def avgBarMove = Average(barMove, rvLookback);
-def avgVolume = Average(volume, rvLookback);
-def volSurge = if avgVolume > 0 then volume / avgVolume else 1;
-def moveSurge = if avgBarMove > 0 then barMove / avgBarMove else 1;
-def flowAbsorption = if moveSurge > 0.01 then volSurge / moveSurge else 1;
-def flowSmooth = ExpAverage(flowAbsorption, smoothPeriod);
+def avgVol = Average(volume, rvLookback);
+def volSurge = if avgVol > 0 then volume / avgVol else 1;
+def nearAnyLevel = nearCallWall or nearPutWall or nearZeroGamma;
+def hedgingSurge = nearAnyLevel and volSurge > 1.5;
+
+# ==============================================================
+# 6. COMPOSITE CONFIDENCE SCORE
+# ==============================================================
+# Combines all signals: range -3 (strong negative) to +4 (strong positive)
+#
+# Level:     +1 above zero-gamma, -1 below
+# VIX Term:  +1 contango, -1 backwardation, 0 flat
+# IV-RV:     +1 spread > 2, -1 spread < -2, 0 neutral
+# Pinning:   +1 pinAvg > 60 (strong pinning = positive gamma)
+
+def levelConf = if aboveZeroGamma then 1 else -1;
+def termConf  = if termContango then 1
+                else if termBackwardation then -1 else 0;
+def ivRvConf  = if ivRvSpread > 2 then 1
+                else if ivRvSpread < -2 then -1 else 0;
+def pinConf   = if pinAvg > 60 then 1 else 0;
+
+def confidence = levelConf + termConf + ivRvConf + pinConf;
 
 # ==============================================================
 # PLOTS
 # ==============================================================
 
-# -- Main GEX histogram --
-plot GEXHist = gexRaw;
-GEXHist.SetPaintingStrategy(PaintingStrategy.HISTOGRAM);
-GEXHist.AssignValueColor(
-    if gexRaw > posThreshold * 2 then Color.GREEN
-    else if gexRaw > posThreshold then Color.DARK_GREEN
-    else if gexRaw > 0 then CreateColor(70, 100, 70)
-    else if gexRaw > negThreshold then CreateColor(100, 70, 70)
-    else if gexRaw > negThreshold * 2 then Color.DARK_RED
+# -- Main: distance from zero-gamma (histogram, in points) --
+plot GammaHist = gammaDistance;
+GammaHist.SetPaintingStrategy(PaintingStrategy.HISTOGRAM);
+GammaHist.AssignValueColor(
+    if belowVolTrigger then Color.MAGENTA
+    else if nearCallWall and gammaDistance > 0 then Color.YELLOW
+    else if nearPutWall and gammaDistance < 0 then Color.YELLOW
+    else if gammaDistance > 30 then Color.GREEN
+    else if gammaDistance > 0 then Color.DARK_GREEN
+    else if gammaDistance > -30 then Color.DARK_RED
     else Color.RED);
-GEXHist.SetLineWeight(3);
+GammaHist.SetLineWeight(3);
 
-# -- Smoothed signal line --
-plot GEXTrend = gexSignal;
-GEXTrend.SetDefaultColor(Color.CYAN);
-GEXTrend.SetLineWeight(2);
+# -- Smoothed trend line --
+plot GammaTrend = gammaSmooth;
+GammaTrend.SetDefaultColor(Color.CYAN);
+GammaTrend.SetLineWeight(2);
 
-# -- Reference lines --
+# -- Zero-gamma flip level (the most important line) --
 plot ZeroLine = 0;
 ZeroLine.SetDefaultColor(Color.WHITE);
-ZeroLine.SetStyle(Curve.SHORT_DASH);
-ZeroLine.SetLineWeight(1);
+ZeroLine.SetLineWeight(2);
 ZeroLine.HideBubble();
-ZeroLine.HideTitle();
 
-plot PosLine = posThreshold;
-PosLine.SetDefaultColor(Color.DARK_GREEN);
-PosLine.SetStyle(Curve.SHORT_DASH);
-PosLine.SetLineWeight(1);
-PosLine.HideBubble();
-PosLine.HideTitle();
+# -- Call wall reference --
+plot CallWall = callWallLevel - zeroGammaLevel;
+CallWall.SetDefaultColor(Color.GREEN);
+CallWall.SetStyle(Curve.MEDIUM_DASH);
+CallWall.SetLineWeight(2);
+CallWall.HideBubble();
 
-plot NegLine = negThreshold;
-NegLine.SetDefaultColor(Color.DARK_RED);
-NegLine.SetStyle(Curve.SHORT_DASH);
-NegLine.SetLineWeight(1);
-NegLine.HideBubble();
-NegLine.HideTitle();
+# -- Put wall reference --
+plot PutWall = putWallLevel - zeroGammaLevel;
+PutWall.SetDefaultColor(Color.RED);
+PutWall.SetStyle(Curve.MEDIUM_DASH);
+PutWall.SetLineWeight(2);
+PutWall.HideBubble();
+
+# -- Vol trigger reference --
+plot VolTrigger = volTriggerLevel - zeroGammaLevel;
+VolTrigger.SetDefaultColor(Color.MAGENTA);
+VolTrigger.SetStyle(Curve.SHORT_DASH);
+VolTrigger.SetLineWeight(1);
+VolTrigger.HideBubble();
+
+# -- Gamma regime flip arrows --
+plot FlipBullish = if gammaFlip and aboveZeroGamma then 0 else Double.NaN;
+FlipBullish.SetPaintingStrategy(PaintingStrategy.ARROW_UP);
+FlipBullish.SetDefaultColor(Color.GREEN);
+FlipBullish.SetLineWeight(5);
+
+plot FlipBearish = if gammaFlip and belowZeroGamma then 0 else Double.NaN;
+FlipBearish.SetPaintingStrategy(PaintingStrategy.ARROW_DOWN);
+FlipBearish.SetDefaultColor(Color.RED);
+FlipBearish.SetLineWeight(5);
+
+# -- Volume surge markers near GEX levels --
+plot HedgeSurge = if hedgingSurge then gammaDistance else Double.NaN;
+HedgeSurge.SetPaintingStrategy(PaintingStrategy.POINTS);
+HedgeSurge.SetDefaultColor(Color.YELLOW);
+HedgeSurge.SetLineWeight(3);
 
 # ==============================================================
 # DASHBOARD LABELS
 # ==============================================================
 
-# -- GEX Regime --
+# -- Update reminder --
 AddLabel(showLabels,
-    if isPositiveGEX then " +GEX: POSITIVE (Mean-Revert) "
-    else if isNegativeGEX then " -GEX: NEGATIVE (Trending) "
-    else " GEX: NEUTRAL ",
-    if isPositiveGEX then Color.GREEN
-    else if isNegativeGEX then Color.RED
+    " Update GEX levels daily ",
+    Color.DARK_GRAY);
+
+# -- GEX Zone --
+AddLabel(showLabels,
+    if belowVolTrigger then " VOL TRIGGER ZONE "
+    else if belowZeroGamma then " NEGATIVE GEX "
+    else if nearCallWall then " CALL WALL ZONE "
+    else " POSITIVE GEX ",
+    if belowVolTrigger then Color.MAGENTA
+    else if belowZeroGamma then Color.RED
+    else if nearCallWall then Color.YELLOW
+    else Color.GREEN);
+
+# -- Confidence score --
+AddLabel(showLabels,
+    "Conf:" + Round(confidence, 0) + "/4",
+    if confidence >= 3 then Color.GREEN
+    else if confidence >= 1 then Color.DARK_GREEN
+    else if confidence >= -1 then Color.GRAY
+    else Color.RED);
+
+# -- Zero-gamma distance --
+AddLabel(showLabels,
+    "Flip:" + Round(zeroGammaLevel, 0) + " " +
+    Round(gammaDistance, 1) + "pts " +
+    if aboveZeroGamma then "ABOVE" else "BELOW",
+    if aboveZeroGamma then Color.GREEN else Color.RED);
+
+# -- Wall distances --
+AddLabel(showLabels,
+    "CallWall:" + Round(callWallLevel, 0) +
+    " (" + Round(callWallLevel - close, 1) + ")",
+    if nearCallWall then Color.YELLOW else Color.GREEN);
+
+AddLabel(showLabels,
+    "PutWall:" + Round(putWallLevel, 0) +
+    " (" + Round(putWallLevel - close, 1) + ")",
+    if nearPutWall then Color.YELLOW else Color.RED);
+
+# -- VIX term structure --
+AddLabel(showLabels,
+    "VIX:" + Round(vixValue, 1) +
+    " 9D:" + Round(vix9dValue, 1) +
+    " R:" + Round(termRatio, 2) +
+    if termContango then " CONTANGO"
+    else if termBackwardation then " BACKWRD"
+    else " FLAT",
+    if termContango then Color.GREEN
+    else if termBackwardation then Color.RED
     else Color.GRAY);
 
-# -- IV value --
+# -- IV vs RV --
 AddLabel(showLabels,
-    "IV:" + Round(ivSmooth, 1) + "%",
-    Color.CYAN);
+    "IV:" + Round(ivSmooth, 1) +
+    " RV:" + Round(rvSmooth, 1) +
+    " Sprd:" + Round(ivRvSpread, 1),
+    if ivRvSpread > 2 then Color.GREEN
+    else if ivRvSpread < -2 then Color.RED
+    else Color.GRAY);
 
-# -- RV value --
+# -- Pinning --
 AddLabel(showLabels,
-    "RV:" + Round(rvSmooth, 1) + "%",
-    Color.ORANGE);
-
-# -- IV-RV Spread --
-AddLabel(showLabels,
-    "Spread:" + Round(gexRaw, 1),
-    if gexRaw > 0 then Color.GREEN else Color.RED);
-
-# -- Pinning score --
-AddLabel(showLabels,
-    "Pin:" + Round(pinAvg, 0) + "%",
+    "Pin:" + Round(pinAvg, 0) + "% at " + Round(nearStrike, 0),
     if pinAvg > 70 then Color.GREEN
     else if pinAvg > 40 then Color.YELLOW
     else Color.RED);
 
-# -- Key gamma strikes --
-def strikeAbove = nearStrike + keyStrikeSpacing;
-def strikeBelow = nearStrike - keyStrikeSpacing;
-
+# -- Volume --
 AddLabel(showLabels,
-    "Strikes: " + Round(strikeBelow, 0) + " | " + Round(nearStrike, 0) + " | " + Round(strikeAbove, 0),
-    Color.WHITE);
-
-# -- Distance to nearest strike --
-AddLabel(showLabels,
-    "Dist:" + Round(distFromStrike, 1) + "pts to " + Round(nearStrike, 0),
-    if distFromStrike < 5 then Color.GREEN
-    else if distFromStrike < 10 then Color.YELLOW
-    else Color.GRAY);
-
-# -- Dealer flow absorption --
-AddLabel(showLabels,
-    "Flow:" +
-    if flowSmooth > 1.3 then " ABSORBED"
-    else if flowSmooth < 0.7 then " AMPLIFIED"
-    else " NORMAL",
-    if flowSmooth > 1.3 then Color.GREEN
-    else if flowSmooth < 0.7 then Color.RED
+    "Vol:" + Round(volSurge, 1) + "x" +
+    if hedgingSurge then " HEDGE SURGE" else "",
+    if hedgingSurge then Color.YELLOW
+    else if volSurge > 1.5 then Color.CYAN
     else Color.GRAY);
 
 # -- Trading guidance --
 AddLabel(showLabels,
-    if isPositiveGEX then "TRADE: Fade moves, sell rips/buy dips near " + Round(nearStrike, 0)
-    else if isNegativeGEX then "TRADE: Follow momentum, trade breakouts"
-    else "TRADE: Mixed regime, reduce size",
-    if isPositiveGEX then Color.GREEN
-    else if isNegativeGEX then Color.RED
+    if belowVolTrigger
+        then "DANGER: Below vol trigger, expect accelerated selling"
+    else if nearPutWall and belowZeroGamma
+        then "WATCH: Testing put wall at " + Round(putWallLevel, 0)
+    else if nearCallWall and aboveZeroGamma
+        then "WATCH: Testing call wall at " + Round(callWallLevel, 0)
+    else if nearZeroGamma
+        then "CAUTION: Near gamma flip at " + Round(zeroGammaLevel, 0)
+    else if aboveZeroGamma and confidence >= 2
+        then "TRADE: +GEX confirmed, fade moves near " + Round(nearStrike, 0)
+    else if belowZeroGamma and confidence <= -2
+        then "TRADE: -GEX confirmed, follow momentum"
+    else "MIXED: Reduce size, wait for clarity",
+    if belowVolTrigger then Color.MAGENTA
+    else if aboveZeroGamma and confidence >= 2 then Color.GREEN
+    else if belowZeroGamma and confidence <= -2 then Color.RED
     else Color.YELLOW);
+
+# ==============================================================
+# ALERTS
+# ==============================================================
+
+Alert(showAlerts and gammaFlip and aboveZeroGamma,
+    "GEX FLIP BULLISH: Price crossed above zero-gamma",
+    Alert.BAR, Sound.Ding);
+
+Alert(showAlerts and gammaFlip and belowZeroGamma,
+    "GEX FLIP BEARISH: Price crossed below zero-gamma",
+    Alert.BAR, Sound.Ring);
+
+Alert(showAlerts and nearCallWall and close > close[1],
+    "Approaching call wall resistance",
+    Alert.BAR, Sound.NoSound);
+
+Alert(showAlerts and nearPutWall and close < close[1],
+    "Approaching put wall support",
+    Alert.BAR, Sound.NoSound);
+
+Alert(showAlerts and belowVolTrigger and close[1] >= volTriggerLevel,
+    "VOL TRIGGER BREACHED: Selling may accelerate",
+    Alert.BAR, Sound.Bell);
